@@ -1,0 +1,335 @@
+| tstats values(sourcetype) as sourcetype WHERE index=* OR index=_* by index
+1)	+++to user rex password and username: 
+index=botsv1 sourcetype=stream:http 
+| rex field=form_data  "username=(?<UserName>\w+)"
+| rex field=form_data  "passwd=(?<Password>\w+)"
+| search  UserName=* Password=* | table _time UserName Password src_ip
+2)	how to know all indexes: 
+| eventcount summarize=false index=* index=_* | dedup index | fields index
+3)	How to know number of hosts per index:
+index=botsv1 host=* | table host | dedup host
+4)	how to detect persistence ?
+index= main host=xxxx source="WinEventLog:Microsoft-Windows-Sysmon/Operational" EventCode=12
+
+index= main host=xxxx source="WinEventLog:Microsoft-Windows-Sysmon/Operational" EventCode=12 | table _time ComputerName EventType Message Image TargetObject | sort _time
+
+index="botsv1"  "3791.exe" sourcetype=suricata
+| table _tinme,src,dest,dest_ip,url,filename
+index="botsv1"  sourcetype="XmlWinEventLog:Microsoft-Windows-Sysmon/Operational"  "3791.exe" CommandLine="3791.exe"  
+
+index="botsv1" 121214.tmp  sourcetype="XmlWinEventLog:Microsoft-Windows-Sysmon/Operational" 
+| table  _time, user, CommandLine,ParentCommandLine,parent_process,parent_process_id,Image, EventCode,EventDescription,MD5,SHA1,SHA256,CurrentDirectory, TargetFilename
+
+5)	+++Search For Length: 
+index=botsv1 sourcetype=stream:http  imreallynotbatman.com 
+| rex field=form_data  "username=(?<UserName>\w+)"
+| rex field=form_data  "passwd=(?<Password>\w+)"
+| eval lenpword=len(Password)
+| search lenpword = 6
+| search  UserName=* Password=* | table _time UserName Password src_ip | sort - _time
+
+6)	+++Search for averg:
+index=botsv1 sourcetype=stream:http  imreallynotbatman.com 
+| rex field=form_data  "username=(?<UserName>\w+)"
+| rex field=form_data  "passwd=(?<Password>\w+)"
+| eval lenpword=len(Password)
+| stats avg(lenpword) as avglen
+
+7)	+++DNS search for suspiouse 
+index="botsv1" src_ip="192.168.250.100" source="stream:dns" NOT query=*.local AND NOT query=*.arpa AND NOT query=*.microsoft.com AND query=*.*
+| table _time, query
+| sort by _time desc
+
+8)	+++associated with threat activity 
+index="botsv1" sourcetype="xmlwineventlog:microsoft-windows-sysmon/operational" *.vbs
+| eval cmdlen=len(CommandLine)
+| table _time,CommandLine, cmdlen
+9)	+++search by USB 
+index="botsv1" sourcetype=winregistry friendlyname 
+| stats count by registry_value_data
+
+10)	+++Search for file connected
+index="botsv1" sourcetype="stream:smb" src_ip=192.168.250.100
+| stats count by path
+
+11)	+++count for pdf search 
+index="botsv1" .pdf 
+| stats dc(Relative_Target_Name)
+
+12)	+++ Splunk pass the hash quires
+index="botsv1"  sourcetype=suricata  
+src_ip="192.168.250.100"  dest!=*icrosoft.com AND dest!=*windows.com
+| table  _tinme,src,dest,dest_ip,url,filename,http.url
+
+13)	++++ Splunk pass the hash quires
+| eval time=strftime(_time,"%m/%d/%Y %H:%M:%S") 
+| table  time,action,EventCode,user,Account_Domain, ComputerName,Account_Name,name,TaskCategory,Logon_Type,Authentication_Package,Logon_Process,source,Process_Name
+
+14)	++ Splunk pass the hash quires
+index="botsv1" EventCode=4624 Logon_Type=3   Logon_Process=NtLmSsp  Key_Length=0  Security_ID="NULL SID" 
+| eval time=strftime(_time,"%m/%d/%Y %H:%M:%S")     
+| table  time,action,EventCode,user,Account_Domain,ComputerName, Account_Name,name,TaskCategory,Logon_Type,Authentication_Package,Logon_Process,source,Process_Name
+
+wineventlog_security` EventCode=4624 (Logon_Type=3 Logon_Process=NtLmSsp WorkstationName=WORKSTATION NOT AccountName="ANONYMOUS LOGON") OR (Logon_Type=9 Logon_Process=seclogo) | fillnull | stats count min(_time) as firstTime max(_time) as lastTime by EventCode, Logon_Type, WorkstationName, user, dest | `security_content_ctime(firstTime)`| `security_content_ctime(lastTime)` | `detect_activity_related_to_pass_the_hash_attacks_filter` 
+Footer
+
+15)	+++ Hunting service creation 
+index="botsv1" EventCode=4697  
+| eval time=strftime(_time,"%m/%d/%Y %H:%M:%S")                                                                      | table  time,action,EventCode,user,Account_Domain,ComputerName, Account_Name,name,TaskCategory,Logon_Type,Authentication_Package,Logon_Process,source,Process_Name,Service_File_Name,Service_Name
+
+
+
+
+16)	++ // TO GET DATA FOR ALL SOURCETYPE
+| metadata type=sourcetypes index=botsv1
+| tstats values(sourcetype) as sourcetype WHERE index=* OR index=_* by index
+17)	+++
+index=windows  EventCode=4688 New_Process_Name=*\powershell.exe Account_Domain=* Process_Command_Line!=NULL 
+| eval time=strftime(_time,"%m/%d/%Y %H:%M:%S")
+| table time,action,EventCode,Security_ID,Account_Domain,ComputerName,Account_Name,TaskCategory,Creator_Process_Name,New_Process_Name,Process_Command_Line,source,process_path
+
+18)	+++ Phishing Domain Identification
+index=email mail from | stats count by Sender
+| rex field=Sender "\@(?<domain_detected>.*)"
+| stats sum(count) as count by domain_detected
+| eval domain_detected=mvfilter(domain_detected!="securityconsulting.
+com")
+| eval list="mozilla"
+| `ut_parse_extended(domain_detected, list)`
+| foreach ut_subdomain_level* [eval
+orig_domain=domain_detected, 
+domain_detected=mvappend(domain_detected, '<<FIELD>>' . "." . 
+ut_tld)]
+| eval domain_names_analyzed=mvappend(domain_detected, 
+ut_domain), company_domains_used = 
+mvappend("securityconsulting.com")
+| `ut_levenshtein(domain_names_analyzed, company_domains_used) `
+| eval ut_levenshtein= min(ut_levenshtein)
+| where ut_levenshtein < 3
+| fields - domain_detected ut_*
+| rename orig_domain as top_level_domain_in_incoming_email
+count as num_occurrences ut_levenshtein as 
+Levenshtein_Similarity_Score
+
+19)	+++  Malicious Attachment Identification
+index=secure_email_gateway (attachment_name="*.com" OR attachment_name="*.xls" 
+| regex attachment_name="^[\d]+\.(doc|xls|)" 
+| table _time mailfrom mailto subject attachment_name
+20)	DNS Analytics
+
+21)	Attackers Leveraging Native Windows Binaries
+index=botsv1 source="WinEventLog:MicrosoftWindows-Sysmon/Operational" 
+Image="*\\powershell.exe" OR 
+Image="*\\msbuild.exe" OR 
+Image="*\\psexec.exe" OR Image="*\\at.exe" OR 
+Image="*\\schtasks.exe" OR Image="*\\net.exe" 
+OR Image="*\\vssadmin.exe" OR 
+Image="*\\utilman.exe" OR Image="*\\wmic.exe" 
+OR Image="*\\mshta.exe" OR 
+Image="*\\wscript.exe" OR 
+Image="*\\cscript.exe" OR Image="*\\cmd.exe" 
+OR Image="*\\whoami.exe" OR Image="*\\mmc.exe" 
+OR Image="*\\systeminfo.exe" OR 
+Image="*\\csvde.exe" OR 
+Image="*\\certutil.exe" | stats 
+values(CommandLine) by Image
+
+22)	Remote Privileged User Enumeration
+index=your_index
+sourcetype="xmlwineventlog:micros
+oft-windowssysmon/operational" 
+process="*\\net.exe" 
+(CommandLine="*net group*" OR 
+CommandLine="*net localgroup*") 
+| stats count by 
+Computer,CommandLine
+
+23)	Mimikatz
+index=your_index
+sourcetype="xmlwineventlog:microsoftwindowssysmon/operational" 
+CommandLine="*privileges::debug*" OR 
+CommandLine="*sekurlsa::*" OR 
+CommandLine="*kerberos::*" OR 
+CommandLine="*crypto::*" OR 
+CommandLine="*lsadump::*" OR 
+CommandLine="*process::*"
+
+
+
+
+
+
+24)	3-PowerShell Executing An Encoded Script
+index=your_index
+sourcetype="xmlwineventlog:microsoftwindowssysmon/operational" 
+process="*\\powershell.exe" 
+(CommandLine="*-encodedcommand*" OR 
+CommandLine="*-enc*" OR CommandLine="-
+e" OR CommandLine="-ec" OR 
+CommandLine="-encodedcomman" OR 
+CommandLine="-encodedcomma" OR 
+CommandLine="-encodedcomm" OR 
+CommandLine="-encodedcom" OR 
+CommandLine="-encodedco" OR 
+CommandLine="-encodedc" OR 
+CommandLine="-encoded" OR 
+CommandLine="-encode" OR 
+CommandLine="-encod" OR CommandLine="-
+enco" OR CommandLine="-en")| stats 
+count by CommandLine | top CommandLine
+25)	5-PSExec (lateral movement) 
+https://www.fireeye.com/blog/threat-research/2014/01/tracking-malware-import-hashing.html 
+index=your_index
+sourcetype="xmlwineventlog:microsoftwindowssysmon/operational" 
+Hashes="*IMPHASH=B18A1401FF8F444056D29
+450FBC0A6CE*" NOT 
+process="*PsExec.exe"
+
+26)	rundll32 ()
+index=your_index
+sourcetype="xmlwineventlog:microsoftwindowssysmon/operational" EventCode=1 
+rundll32.exe | search 
+Image="*\\rundll32.exe" 
+(CommandLine="*\\AppData\\Local\\Temp*
+" CommandLine="*qwerty*") OR 
+(ParentImage="*\\winword.exe" OR 
+ParentImage="*\\excel.exe" OR 
+ParentImage="*\\cscript.exe" OR 
+ParentImage="*\\wscript.exe" OR 
+ParentImage="*\\mshta.exe")
+
+
+
+
+
+27)	Beaconing Malware
+https://www.splunk.com/blog/2018/03/20/hunting-your-dns-dragons.html 
+index=botsv1 source="stream:dns" 
+message_type="QUERY"
+| fields _time, query
+| streamstats current=f last(_time) as last_time by query
+| eval gap=last_time - _time
+| stats count avg(gap) AS AverageBeaconTime var(gap) AS VarianceBeaconTime BY query
+|evalAverageBeaconTime=round(AverageBeaconTime,3),VarianceBeaconTime=round(VarianceBeaconTime,3) | sort -count
+| where VarianceBeaconTime < 60 AND count > 2 AND AverageBeaconTime>1.000
+| table query VarianceBeaconTime count AverageBeaconTime
+
+28)	Malicious PowerShell Activity
+index=botsv1 EventID=4688 
+(BaseFileName=powershell.exe OR 
+BaseFileName=powershell_ise.exe OR 
+BaseFileName=cmd.exe) (Copy-Item OR .CopyHere OR 
+New-Object OR WebClient OR DownloadFile OR 
+downloadstring OR WebRequest OR restmethod) 
+(CommandLine="*Copy-Item*" OR 
+CommandLine="*CopyHere*" OR CommandLine="*NewObject*" OR CommandLine="*WebClient*" OR 
+CommandLine="*DownloadFile*" OR 
+CommandLine="*downloadstring*" OR 
+CommandLine="*WebRequest*" OR 
+CommandLine="*restmethod*" OR 
+CommandLine="*iex*" OR 
+CommandLine="*comobject*InternetExplorer*" OR 
+CommandLine="*Msxml2.XMLHTTP*" OR 
+CommandLine="*WinHttp*" OR 
+CommandLine="*bitstransfer*" | table _time, 
+Computer, SubjectDomainName, SubjectUserName, 
+BaseFileName, CommandLine, CreatorProcessName, 
+NewProcessName, FileDescription, FileVersion, MD5
+
+
+
+
+
+
+
+index=botsv1 EventID=4688 
+(CommandLine="*powershell") 
+(CreatorProcessName="WINWORD" OR 
+CreatorProcessName="POWERPNT" OR 
+CreatorProcessName="EXCEL" OR 
+CreatorProcessName="Adobe*") | table _time, 
+host, SubjectUserName, CreatorProcessName, 
+BaseFileName, CommandLine
+
+29)	Unauthorized DNS Server Interactions
+index=your_index
+sourcetype=stream:dns
+dest_port=53 dest_ip!=
+10.0.0.0/8 | stats dc(src_ip) 
+values(src_ip) by dest_i
+
+30)	SQL Injection
+index=botsv1 sourcetype="iis" | regex 
+cs_uri_query="(?i)(?:--
+|\;|\/\*|\@|\@\@version|char|alter|begi
+n|cast|create|cursor|declare|delete|dro
+p|end|exec|fetch|insert|kill|open|selec
+t|sys|table|update)"
+| stats count by host c_ip cs_uri_stem
+cs_uri_query
+| rex field=cs_uri_query
+"(?i)(?<suspect>--
+|\;|\/\*|\@|\@\@version|char|alter|begi
+n|cast|create|cursor|declare|delete|dro
+p|end|exec|fetch|insert|kill|open|selec
+t|sys|table|update)" max_match=0
+
+action,app,Computer,src_ip,dest_ip,EventCode,EventDescription,Image,ImageLoaded,process,process_id,md5,sha1,sha256,Signature,Signed,CommandLine,ParentCommandLine,ParentImage,
+sourcetype="XmlWinEventLog:Microsoft-Windows-Sysmon/Operational" 
+
+31)	#all the events that occurred and all processes
+index=botsv2 ((Logon_ID=0x171491a OR LogonId=0x171491a) host=venus) | table _time EventCode TaskCategory Account_Name Security_ID Process_Command_Line CommandLine ParentCommandLine | reverse
+
+
+32)	#Task 6. Hunt for PowerShell Base64 encoded commands
+index=* EventCode=1 | eval cmdline =replace(cmdline, "-[Ee][Nn][Cc][Oo][Dd][Ii][Nn][Gg]", "__encoding") | search Image="*\\powershell.exe"
+(cmdline="* -enc*" OR cmdline="* -en *" OR cmdline="* -e *" OR cmdline="* -ec *") | table _time Computer User cmdline
+
+
+33)	#Task 7. Hunt for lateral movement through admin shares
+index="winsysmon" EventCode=1 ParentImage=\\\\127.0.0.1\\ADMIN$\\*.exe AND Image=*\\rundll32.exe | table _time Computer User ParentImage Image
+
+34)	#Task 8. Hunt for download of word documents
+index="winsysmon" EventCode=15 TargetFilename="*.doc.*" | table _time Computer Image TargetFilename MD5
+
+35)	#Task 9. Hunt for malicious Word document
+index="winsysmon" EventCode=1 ParentImage=*\\winword.exe | table _time Computer User Image ParentImage ParentCommandLine
+
+36)	#Task 12. Hunt for internal recon
+index="winsysmon" EventCode=1 Image=*\\ipconfig.exe OR Image=*\\net.exe OR Image=*\\whoami.exe OR Image=*\\netstat.exe OR Image=*\\nbtstat.exe OR Image=*\\hostname.exe OR Image=*\\tasklist.exe | bin _time span=15m | stats dc(Image) AS CNT_CMDS values(CommandLine) values(ParentCommandLine) count by _time Computer User | where CNT_CMDS > 2
+
+37)	# Hunt for suspicious VBS scripts
+index="winsysmon" EventCode=1 Image="*\\cscript.exe" OR Image="*\\wscript.exe" | rex field=Image ".*\\\\(?<Image_fn>[^\\\\]*)" | rex field=ParentImage ".*\\\\(?<ParentImage_fn>[^\\\\]*)" | stats count by Computer User ProcessId Image CommandLine ParentImage ParentCommandLine
+
+38)	#DNS Exfilteration: 
+index=botsv2 sourcetype=stream:dns hildegardsfarm.com "query{}"="*" query *.hildegardsfarm.com 
+| eval query{}=mvdedup(query)
+| eval list="mozilla"
+| `ut_parse_extended(query{},list)` 
+| `ut_shannon(ut_subdomain)` 
+| table src_ip dest_ip query{} ut_subdomain ut_shannon
+
+
+
+39)	view which files were uploaded/exfiltrated (do the below for each transmission) as follows.
+index=botsv2 sourcetype=stream:ftp src_ip=* dest_ip=160.153.91.7 | stats count by filename
+
+index="botsv1" sourcetype="XmlWinEventLog:Microsoft-Windows-Sysmon/Operational"
+| table _time,action,app,Computer,src,dest,src_ip,dest_ip,EventCode,EventDescription, Image, ImageLoaded,process,process_id,md5,sha1,sha256, Signature,Signed,CommandLine, ParentCommandLine,ParentImage
+
+40)	#Extend IP location to visualizations
+index="botsv1" sourcetype="stream:http" dest_ip=192.168.250.70 http_method=POST form_data=*user*pass* | iplocation src_ip | geostats latfield=lat longfield=lon count by src_ip
+
+41)	#Visualize the frequency of the password brute-forcing attack.
+index="botsv1" sourcetype="stream:http" dest_ip=192.168.250.70 http_method=POST form_data=*user*pass* | rex field=form_data "passwd=(?<userpassword>\w+)" | timechart span=1s count by dest_ip
+
+42)	#All commands being executed can be listed through the Splunk search below.
+index="botsv1" sourcetype="xmlwineventlog:microsoft-windows-sysmon/operational" | stats values(CommandLine) by Computer,process
+
+43)	#If you want to list all commands being executed by a specific (usually abused) process, you can do so as follows.
+index="botsv1" sourcetype="xmlwineventlog:microsoft-windows-sysmon/operational" process=*cmd.exe | stats values(CommandLine) by Computer,process
+
+44)	#If you want to identify, for example, the longest cmd.exe command that was executed (overly long commands are suspicious), you can do so as follows.
+index="botsv1" sourcetype="xmlwineventlog:microsoft-windows-sysmon/operational" process=*cmd.exe | eval len=len(CommandLine) | table User, len, CommandLine | sort -len
+
+	
